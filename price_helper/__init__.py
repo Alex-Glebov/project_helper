@@ -14,7 +14,9 @@ Timezone handling:
 from .core import (
     get_closest_price,
     get_closest_price_with_time,
+    get_chained_price,
     PriceHelper,
+    ChainResolver,
     PriceNotFoundError,
 )
 from .utils import (
@@ -26,7 +28,7 @@ from .utils import (
     LOCAL_TIMEZONE,
 )
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 __author__ = "Alex Glebov + Claude code"
 __email__ = "python@iitsp.com.au"
 
@@ -34,7 +36,9 @@ __all__ = [
     # Core functions
     "get_closest_price",
     "get_closest_price_with_time",
+    "get_chained_price",
     "PriceHelper",
+    "ChainResolver",
     "PriceNotFoundError",
     # Utils
     "parse_pair",

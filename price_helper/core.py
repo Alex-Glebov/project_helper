@@ -4,6 +4,7 @@ Core functionality for price-helper package.
 Handles loading feather files and retrieving closest price data for timestamps.
 """
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
@@ -447,3 +448,313 @@ def get_closest_price_with_time(
     closest_ts_local = to_local_timezone(closest_ts_utc)
 
     return price, closest_ts_local
+
+
+class ChainResolver:
+    """
+    Resolver for finding price chains when direct pair data is not available.
+
+    For example, if EUR_JPY is not available directly, it can be calculated as:
+    EUR_JPY = EUR_USD * USD_JPY
+
+    Or with longer chains:
+    EUR_JPY = EUR_USD * USD_GBP * GBP_JPY
+    """
+
+    def __init__(
+        self,
+        price_dir: Union[str, Path] = "~/ollama/claudehome/price",
+        delimiter: str = "_",
+        max_chain_length: int = 4
+    ):
+        """
+        Initialize ChainResolver.
+
+        Args:
+            price_dir: Directory containing .feather files
+            delimiter: Delimiter for parsing pair strings
+            max_chain_length: Maximum length of pair chain (default: 4)
+        """
+        self.price_dir = Path(price_dir).expanduser().resolve()
+        self.delimiter = delimiter
+        self.max_chain_length = max_chain_length
+        self.helper = PriceHelper(price_dir=price_dir, delimiter=delimiter)
+        self._cache = {}  # Cache for available pairs
+
+    def _get_available_pairs(self) -> set:
+        """
+        Scan directory and get all available pair names.
+
+        Returns:
+            Set of available pair strings
+        """
+        if self._cache.get('pairs'):
+            return self._cache['pairs']
+
+        pairs = set()
+
+        if not self.price_dir.exists():
+            logger.warning(f"Price directory does not exist: {self.price_dir}")
+            return pairs
+
+        for file_path in self.price_dir.glob("*-trades-*.feather"):
+            # Extract pair from {pair}-trades-{date}.feather
+            filename = file_path.stem
+            match = re.match(r'^(.+?)-trades-', filename)
+            if match:
+                pair_name = match.group(1)
+                if pair_name:
+                    pairs.add(pair_name)
+                    # Also add the inverse pair
+                    base, quote = parse_pair(pair_name, self.delimiter)
+                    if base and quote:
+                        inverse = f"{quote}{self.delimiter}{base}"
+                        pairs.add(inverse)
+
+        self._cache['pairs'] = pairs
+        logger.debug(f"Found {len(pairs)} available pairs")
+        return pairs
+
+    def _get_price_direct(
+        self,
+        dt: datetime,
+        pair: str,
+        tolerance_seconds: Optional[int] = None
+    ) -> Optional[float]:
+        """
+        Try to get price directly from file.
+
+        Returns:
+            Price if found, None otherwise
+        """
+        try:
+            return self.helper.get_closest_price(dt, pair, tolerance_seconds)
+        except PriceNotFoundError:
+            return None
+
+    def _get_price_or_inverse(
+        self,
+        dt: datetime,
+        pair: str,
+        tolerance_seconds: Optional[int] = None
+    ) -> tuple:
+        """
+        Get price, trying direct and inverse pairs.
+
+        For pair "A_B", also tries "B_A" and returns 1/price.
+
+        Returns:
+            Tuple of (price, is_inverse) or (None, False) if not found
+        """
+        # Try direct
+        price = self._get_price_direct(dt, pair, tolerance_seconds)
+        if price is not None:
+            return price, False
+
+        # Try inverse
+        base, quote = parse_pair(pair, self.delimiter)
+        if base and quote:
+            inverse_pair = f"{quote}{self.delimiter}{base}"
+            price = self._get_price_direct(dt, inverse_pair, tolerance_seconds)
+            if price is not None:
+                return 1.0 / price, True
+
+        return None, False
+
+    def find_chain(
+        self,
+        target_pair: str,
+        visited: Optional[set] = None,
+        current_path: Optional[list] = None,
+        depth: int = 0
+    ) -> Optional[list]:
+        """
+        Recursively find a chain of pairs to calculate target pair.
+
+        Args:
+            target_pair: The desired pair (e.g., "EUR_JPY")
+            visited: Set of visited currencies (for cycle detection)
+            current_path: Current chain of pairs being built
+            depth: Current recursion depth
+
+        Returns:
+            List of pairs forming the chain, or None if no chain found
+        """
+        import re
+
+        if visited is None:
+            visited = set()
+        if current_path is None:
+            current_path = []
+
+        # Check max depth
+        if depth >= self.max_chain_length:
+            return None
+
+        target_base, target_quote = parse_pair(target_pair, self.delimiter)
+
+        if not target_base or not target_quote:
+            return None
+
+        # Check if we can get this pair directly
+        available_pairs = self._get_available_pairs()
+        if target_pair in available_pairs:
+            return current_path + [target_pair]
+
+        # Check if inverse is available
+        inverse_pair = f"{target_quote}{self.delimiter}{target_base}"
+        if inverse_pair in available_pairs:
+            # Will be handled by _get_price_or_inverse
+            return current_path + [target_pair]
+
+        # Mark current base as visited to prevent cycles
+        visited.add(target_base)
+
+        # Find all pairs that start with target_base
+        # or all pairs that end with target_quote
+        candidates = []
+
+        for pair in available_pairs:
+            base, quote = parse_pair(pair, self.delimiter)
+            if not base or not quote:
+                continue
+
+            # Look for pairs that can extend our chain
+            # We want: target_base -> X and X -> target_quote
+            if base == target_base and quote not in visited:
+                candidates.append((pair, quote, target_quote))
+            elif quote == target_quote and base not in visited:
+                candidates.append((pair, target_base, base))
+
+        # Try each candidate
+        for pair, next_base, next_quote in candidates:
+            next_pair = f"{next_base}{self.delimiter}{next_quote}"
+
+            # Recursively find chain from next currency to target
+            new_path = current_path + [pair]
+            result = self.find_chain(
+                next_pair,
+                visited.copy(),
+                new_path,
+                depth + 1
+            )
+
+            if result is not None:
+                return result
+
+        return None
+
+    def get_chained_price(
+        self,
+        dt: datetime,
+        pair: str,
+        tolerance_seconds: Optional[int] = None
+    ) -> float:
+        """
+        Get price using chain of pairs when direct data is not available.
+
+        For example:
+        - EUR_JPY = EUR_USD * USD_JPY
+        - EUR_GBP = EUR_USD * USD_GBP
+        - EUR_JPY = EUR_USD * USD_GBP * GBP_JPY (longer chain)
+
+        Args:
+            dt: Target datetime
+            pair: Trading pair string (e.g., "EUR_JPY")
+            tolerance_seconds: Maximum allowed difference per pair
+
+        Returns:
+            Calculated price
+
+        Raises:
+            PriceNotFoundError: If no chain can be found
+        """
+        # Convert to local for logging
+        dt_local = to_local_timezone(dt)
+        logger.info(f"Looking for chained price: {pair} at {dt_local}")
+
+        # First try direct price
+        direct_price = self._get_price_or_inverse(dt, pair, tolerance_seconds)
+        if direct_price[0] is not None:
+            logger.info(f"Found direct price for {pair}: {direct_price[0]}")
+            return direct_price[0]
+
+        # Find chain
+        chain = self.find_chain(pair)
+
+        if not chain:
+            raise PriceNotFoundError(
+                f"No direct price or chain found for {pair}. "
+                f"Tried max chain length: {self.max_chain_length}"
+            )
+
+        logger.info(f"Found chain for {pair}: {' -> '.join(chain)}")
+
+        # Calculate price by multiplying along chain
+        total_price = 1.0
+        actual_chain = []
+
+        for i, pair_in_chain in enumerate(chain):
+            price, is_inverse = self._get_price_or_inverse(
+                dt, pair_in_chain, tolerance_seconds
+            )
+
+            if price is None:
+                raise PriceNotFoundError(
+                    f"Chain failed at step {i+1}: {pair_in_chain} not available"
+                )
+
+            total_price *= price
+            actual_chain.append(f"{pair_in_chain}{'(inv)' if is_inverse else ''}")
+
+        logger.info(
+            f"Calculated {pair} = {total_price:.6f} from chain: "
+            f"{' * '.join(actual_chain)}"
+        )
+
+        return total_price
+
+
+def get_chained_price(
+    dt: datetime,
+    pair: str,
+    price_dir: Union[str, Path] = "~/ollama/claudehome/price",
+    delimiter: str = "_",
+    tolerance_seconds: Optional[int] = None,
+    max_chain_length: int = 4
+) -> float:
+    """
+    Convenience function to get chained price for a pair.
+
+    Tries direct price first, then falls back to chain calculation.
+
+    Args:
+        dt: Target datetime
+        pair: Trading pair string
+        price_dir: Directory containing .feather files
+        delimiter: Delimiter for parsing pair strings
+        tolerance_seconds: Maximum allowed difference per pair
+        max_chain_length: Maximum number of pairs in chain (default: 4)
+
+    Returns:
+        Price value (direct or calculated)
+
+    Raises:
+        PriceNotFoundError: If no direct price or chain can be found
+
+    Example:
+        >>> from datetime import datetime
+        >>> # If EUR_JPY not available directly, but EUR_USD and USD_JPY are:
+        >>> price = get_chained_price(
+        ...     dt=datetime(2024, 1, 15, 12, 30),
+        ...     pair="EUR_JPY"
+        ... )
+
+        # Calculates: EUR_JPY = EUR_USD * USD_JPY
+    """
+    resolver = ChainResolver(
+        price_dir=price_dir,
+        delimiter=delimiter,
+        max_chain_length=max_chain_length
+    )
+    return resolver.get_chained_price(dt, pair, tolerance_seconds)
