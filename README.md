@@ -6,10 +6,20 @@ A Python package for retrieving price data from Feather files based on timestamp
 
 - Load price data from `.feather` files
 - Find closest price for a given timestamp
+- **Automatic timezone handling** (Australia/Sydney local time ↔ UTC)
 - Support for multiple timestamp and price column names (auto-detection)
 - Flexible pair parsing with custom delimiters
-- Month-based file organization
+- Date-based file organization with multi-month files
 - Optional tolerance constraints
+
+## Timezone Handling
+
+This package uses **Australia/Sydney** as the local timezone:
+
+- **Input**: Naive datetimes are assumed to be in local timezone (Australia/Sydney)
+- **File naming**: File dates are in local timezone (e.g., `2024-01-15` means Jan 15 in Sydney)
+- **First record**: Approximately 2pm UTC on the previous day (due to Sydney being UTC+10/11)
+- **Output**: All returned datetimes are in local timezone (Australia/Sydney)
 
 ## Installation
 
@@ -34,12 +44,26 @@ pip install git+https://github.com/Alex-Glebov/project_helper.git
 from datetime import datetime
 from price_helper import get_closest_price
 
-# Get price for a specific timestamp
+# Get price for a specific timestamp (naive datetime assumed local/Sydney)
 price = get_closest_price(
     dt=datetime(2024, 1, 15, 12, 30, 0),
     pair="BTC_USD"
 )
 print(f"Price: {price}")
+```
+
+### Get Price with Timestamp
+
+```python
+from datetime import datetime
+from price_helper import get_closest_price_with_time
+
+# Returns both price and the actual timestamp (in local timezone)
+price, actual_time = get_closest_price_with_time(
+    dt=datetime(2024, 1, 15, 12, 30, 0),
+    pair="BTC_USD"
+)
+print(f"Price: {price} at {actual_time}")
 ```
 
 ### Advanced Usage with PriceHelper Class
@@ -64,6 +88,7 @@ price = helper.get_closest_price(
 )
 
 # Get price range
+# Result timestamps are in local timezone (Australia/Sydney)
 df = helper.get_price_range(
     pair="BTC_USD",
     start_dt=datetime(2024, 1, 15, 0, 0, 0),
@@ -71,20 +96,41 @@ df = helper.get_price_range(
 )
 ```
 
+### Timezone Conversion Utilities
+
+```python
+from datetime import datetime
+from price_helper import to_local_timezone, to_utc, LOCAL_TIMEZONE
+
+# Convert naive datetime to local timezone (Sydney)
+dt_local = to_local_timezone(datetime(2024, 1, 15, 12, 0, 0))
+
+# Convert to UTC for internal processing
+dt_utc = to_utc(datetime(2024, 1, 15, 12, 0, 0))
+
+# Get the timezone object
+print(f"Local timezone: {LOCAL_TIMEZONE}")  # Australia/Sydney
+```
+
 ## File Naming Convention
 
-Price files should follow this naming pattern:
+Price files follow this naming pattern:
 
 ```
-{pair}_{YYYYMM}.feather
+{pair}-trades-{YYYY-MM-dd}.feather
 ```
+
+Where:
+- `{pair}`: Trading pair (e.g., `BTC_USD`)
+- `trades`: Fixed identifier
+- `{YYYY-MM-dd}`: Start date in local timezone (Australia/Sydney)
+- `dd`: Number of months in the file (e.g., `15` could mean data covers 15 days or it's just part of the date)
 
 Examples:
-- `BTC_USD_202401.feather` - BTC/USD data for January 2024
-- `ETH_USD_202402.feather` - ETH/USD data for February 2024
-- `BTC_202401.feather` - BTC data (single symbol) for January 2024
+- `BTC_USD-trades-2024-01-15.feather` - BTC/USD data starting Jan 15, 2024 (Sydney)
+- `ETH_USD-trades-2024-02-01.feather` - ETH/USD data starting Feb 1, 2024 (Sydney)
 
-The package searches for files matching the base symbol and year-month of the requested timestamp.
+**Note**: The first record in a file starting on `2024-01-15` will actually be around `2024-01-14 14:00 UTC` due to Sydney being UTC+10/11.
 
 ## Data Format
 
@@ -92,7 +138,7 @@ Feather files should contain:
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `timestamp` or `datetime` | datetime | Price timestamp |
+| `timestamp` or `datetime` | datetime | Price timestamp (usually in UTC) |
 | `price` or `close` | float | Price value |
 
 Auto-detected column names:
@@ -106,7 +152,7 @@ Auto-detected column names:
 Convenience function to get the closest price.
 
 **Parameters:**
-- `dt` (datetime): Target timestamp
+- `dt` (datetime): Target timestamp (naive assumed local/Sydney, aware converted)
 - `pair` (str): Trading pair (e.g., "BTC_USD")
 - `price_dir` (str, optional): Price directory path. Default: `~/ollama/claudehome/price`
 - `delimiter` (str, optional): Pair delimiter. Default: "_"
@@ -117,6 +163,13 @@ Convenience function to get the closest price.
 
 **Raises:**
 - `PriceNotFoundError`: If price file not found or no data within tolerance
+
+### `get_closest_price_with_time(dt, pair, **kwargs)`
+
+Get the closest price and its timestamp.
+
+**Returns:**
+- `tuple`: (price, timestamp_in_local_timezone)
 
 ### `PriceHelper` Class
 
@@ -130,16 +183,18 @@ Main class for price retrieval operations.
 
 **Methods:**
 - `get_closest_price(dt, pair, tolerance_seconds=None)`: Get closest price
-- `get_price_range(pair, start_dt, end_dt)`: Get price data for time range
+- `get_price_range(pair, start_dt, end_dt)`: Get price data for time range (returns local timezone datetimes)
 
 ### Utility Functions
 
 ```python
 from price_helper.utils import (
-    parse_pair,           # Parse pair string into components
-    find_price_file,      # Find price file for pair and datetime
-    list_available_pairs, # List all available pairs
-    list_available_months # List available months for a pair
+    parse_pair,                # Parse pair string into components
+    find_price_file,           # Find price file for pair and datetime
+    find_price_files_for_pair, # Find all files for a pair
+    to_local_timezone,         # Convert to local timezone
+    to_utc,                    # Convert to UTC
+    LOCAL_TIMEZONE,            # The local timezone object
 )
 ```
 
@@ -189,7 +244,7 @@ project_helper/
 ├── price_helper/
 │   ├── __init__.py      # Package exports
 │   ├── core.py          # PriceHelper class and main logic
-│   └── utils.py         # Utility functions
+│   └── utils.py         # Utility functions and timezone handling
 ├── tests/               # Unit tests
 ├── setup.py             # Package configuration
 └── README.md            # This file

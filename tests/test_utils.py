@@ -2,15 +2,20 @@
 import pytest
 from datetime import datetime
 from pathlib import Path
+import pytz
 
 from price_helper.utils import (
     parse_pair,
     get_base_symbol,
     get_quote_symbol,
-    build_filename_pattern,
+    to_local_timezone,
+    to_utc,
+    parse_filename_date,
     find_price_file,
+    find_price_files_for_pair,
     list_available_pairs,
-    list_available_months,
+    list_available_date_ranges,
+    LOCAL_TIMEZONE,
 )
 
 
@@ -56,13 +61,96 @@ class TestGetSymbols:
         assert get_quote_symbol("ETH-USD", delimiter="-") == "USD"
 
 
-class TestBuildFilenamePattern:
-    """Test filename pattern building."""
+class TestTimezoneConversion:
+    """Test timezone conversion functions."""
 
-    def test_build_pattern(self):
-        """Test building filename pattern."""
-        pattern = build_filename_pattern("BTC", "202401")
-        assert pattern == "BTC*202401.feather"
+    def test_to_local_timezone(self):
+        """Test converting to local timezone."""
+        # Test with naive datetime (assumed local)
+        dt_naive = datetime(2024, 1, 15, 12, 0, 0)
+        dt_local = to_local_timezone(dt_naive)
+        assert dt_local.tzinfo is not None
+        assert dt_local.tzinfo.zone == 'Australia/Sydney'
+
+    def test_to_utc(self):
+        """Test converting to UTC."""
+        # Test with naive datetime (assumed local)
+        dt_naive = datetime(2024, 1, 15, 12, 0, 0)
+        dt_utc = to_utc(dt_naive)
+        assert dt_utc.tzinfo is not None
+        assert dt_utc.tzinfo == pytz.UTC
+
+    def test_timezone_conversion_roundtrip(self):
+        """Test that timezone conversions are consistent."""
+        dt_naive = datetime(2024, 1, 15, 12, 0, 0)
+        dt_utc = to_utc(dt_naive)
+        dt_local = to_local_timezone(dt_utc)
+        assert dt_local.tzinfo.zone == 'Australia/Sydney'
+
+
+class TestParseFilenameDate:
+    """Test filename date parsing."""
+
+    def test_parse_standard_filename(self):
+        """Test parsing standard filename format."""
+        dt = parse_filename_date("BTC_USD-trades-2024-01-15")
+        assert dt is not None
+        assert dt.year == 2024
+        assert dt.month == 1
+        assert dt.day == 15
+        assert dt.tzinfo.zone == 'Australia/Sydney'
+
+    def test_parse_filename_no_date(self):
+        """Test parsing filename without date."""
+        dt = parse_filename_date("BTC_USD-trades")
+        assert dt is None
+
+
+class TestFindPriceFiles:
+    """Test finding price files."""
+
+    def test_find_files_for_pair(self, tmp_path):
+        """Test finding files for a pair."""
+        # Create test files
+        (tmp_path / "BTC_USD-trades-2024-01-15.feather").touch()
+        (tmp_path / "BTC_USD-trades-2024-02-15.feather").touch()
+        (tmp_path / "ETH_USD-trades-2024-01-15.feather").touch()
+
+        files = find_price_files_for_pair("BTC_USD", tmp_path)
+        assert len(files) == 2
+
+    def test_find_price_file_specific_date(self, tmp_path):
+        """Test finding file for specific date."""
+        # Create test files
+        (tmp_path / "BTC_USD-trades-2024-01-15.feather").touch()
+        (tmp_path / "BTC_USD-trades-2024-02-15.feather").touch()
+
+        target = datetime(2024, 1, 20, 12, 0, 0)
+        file_path = find_price_file("BTC_USD", target, tmp_path)
+        assert file_path is not None
+        assert "2024-01-15" in str(file_path)
+
+
+class TestListAvailable:
+    """Test listing available data."""
+
+    def test_list_available_pairs(self, tmp_path):
+        """Test listing available pairs."""
+        (tmp_path / "BTC_USD-trades-2024-01-15.feather").touch()
+        (tmp_path / "ETH_USD-trades-2024-01-15.feather").touch()
+
+        pairs = list_available_pairs(tmp_path)
+        assert "BTC_USD" in pairs
+        assert "ETH_USD" in pairs
+
+    def test_list_available_date_ranges(self, tmp_path):
+        """Test listing available date ranges."""
+        (tmp_path / "BTC_USD-trades-2024-01-15.feather").touch()
+        (tmp_path / "BTC_USD-trades-2024-02-15.feather").touch()
+
+        dates = list_available_date_ranges(tmp_path, pair="BTC_USD")
+        assert "2024-01-15" in dates
+        assert "2024-02-15" in dates
 
 
 class TestValidation:

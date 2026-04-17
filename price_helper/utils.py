@@ -7,10 +7,15 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 import logging
 
+import pytz
+
 logger = logging.getLogger(__name__)
+
+# Default timezone - Australia/Sydney
+LOCAL_TIMEZONE = pytz.timezone('Australia/Sydney')
 
 
 def parse_pair(pair: str, delimiter: str = "_") -> tuple:
@@ -69,23 +74,113 @@ def get_quote_symbol(pair: str, delimiter: str = "_") -> str:
     return parse_pair(pair, delimiter)[1]
 
 
-def build_filename_pattern(base: str, year_month: str) -> str:
+def to_local_timezone(dt: datetime) -> datetime:
     """
-    Build a filename pattern for searching price files.
-
-    File naming convention:
-    - Files start with the pair name (base symbol)
-    - End with the covered month (YYYYMM)
-    - Extension is .feather
+    Convert datetime to local timezone (Australia/Sydney).
 
     Args:
-        base: Base symbol (e.g., "BTC")
-        year_month: Year-month string (e.g., "202401")
+        dt: Datetime object (naive or timezone-aware)
 
     Returns:
-        Filename pattern for glob search
+        Datetime in local timezone
     """
-    return f"{base}*{year_month}.feather"
+    if dt.tzinfo is None:
+        # Assume naive datetime is in local timezone
+        dt = LOCAL_TIMEZONE.localize(dt)
+    else:
+        # Convert to local timezone
+        dt = dt.astimezone(LOCAL_TIMEZONE)
+    return dt
+
+
+def to_utc(dt: datetime) -> datetime:
+    """
+    Convert datetime to UTC.
+
+    Args:
+        dt: Datetime object (naive or timezone-aware)
+
+    Returns:
+        Datetime in UTC
+    """
+    if dt.tzinfo is None:
+        # Assume naive datetime is in local timezone
+        dt = LOCAL_TIMEZONE.localize(dt)
+    # Convert to UTC
+    return dt.astimezone(pytz.UTC)
+
+
+def parse_filename_date(filename: str) -> Optional[datetime]:
+    """
+    Parse date from filename.
+
+    Filename format: {pair}-trades-{YYYY-MM-dd}.feather
+    where dd is the number of months in the file.
+    The date is in local timezone (Australia/Sydney).
+
+    Args:
+        filename: Name of the file (without extension)
+
+    Returns:
+        Datetime object in local timezone, or None if not found
+    """
+    # Look for date pattern YYYY-MM-DD
+    match = re.search(r'(\d{4})-(\d{2})-(\d{2})', filename)
+    if match:
+        year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        # Create datetime in local timezone
+        dt = datetime(year, month, day, 0, 0, 0)
+        return LOCAL_TIMEZONE.localize(dt)
+    return None
+
+
+def find_price_files_for_pair(
+    pair: str,
+    price_dir: Path,
+    delimiter: str = "_"
+) -> List[Tuple[Path, datetime]]:
+    """
+    Find all price files for a given pair.
+
+    File naming: {pair}-trades-{YYYY-MM-dd}.feather
+
+    Args:
+        pair: Trading pair string (e.g., "BTC_USD")
+        price_dir: Directory containing price files
+        delimiter: Delimiter for parsing pair
+
+    Returns:
+        List of tuples (file_path, start_date_in_local_tz)
+    """
+    base, quote = parse_pair(pair, delimiter)
+
+    if not price_dir.exists():
+        logger.warning(f"Price directory does not exist: {price_dir}")
+        return []
+
+    files = []
+
+    # Build search pattern: {pair}-trades-*.feather
+    pattern = f"{pair}-trades-*.feather"
+
+    for file_path in price_dir.glob(pattern):
+        start_date = parse_filename_date(file_path.stem)
+        if start_date:
+            files.append((file_path, start_date))
+
+    # Also try without the pair prefix if no files found
+    if not files:
+        # Try matching by base symbol only
+        for file_path in price_dir.glob("*-trades-*.feather"):
+            if base.lower() in file_path.stem.lower():
+                start_date = parse_filename_date(file_path.stem)
+                if start_date:
+                    files.append((file_path, start_date))
+
+    # Sort by start date
+    files.sort(key=lambda x: x[1])
+
+    return files
 
 
 def find_price_file(
@@ -97,65 +192,68 @@ def find_price_file(
     """
     Find the price file for a given pair and datetime.
 
-    Searches for .feather files matching the pattern:
-    {base}*{YYYYMM}.feather
+    File naming: {pair}-trades-{YYYY-MM-dd}.feather
+    where dd is the number of months in the file.
+
+    The datetime is converted to UTC for searching, but the filename
+    date is in local timezone (Australia/Sydney).
 
     Args:
         pair: Trading pair string (e.g., "BTC_USD")
-        dt: Target datetime
+        dt: Target datetime (will be converted to UTC)
         price_dir: Directory containing price files
         delimiter: Delimiter for parsing pair
 
     Returns:
         Path to the price file, or None if not found
     """
-    base, quote = parse_pair(pair, delimiter)
-    year_month = dt.strftime("%Y%m")
+    # Convert input datetime to UTC for searching
+    dt_utc = to_utc(dt)
 
-    logger.debug(f"Searching for {pair} data in {price_dir} for {year_month}")
+    logger.debug(f"Searching for {pair} data at UTC: {dt_utc}")
 
-    # Build search patterns
-    patterns = [
-        f"{base}*{year_month}.feather",
-        f"{base}_{quote}*{year_month}.feather",
-        f"{base}_{quote}_{year_month}.feather",
-        f"{base}*{quote}*{year_month}.feather",
-    ]
+    # Find all files for this pair
+    files = find_price_files_for_pair(pair, price_dir, delimiter)
 
-    # Search for files
-    if not price_dir.exists():
-        logger.warning(f"Price directory does not exist: {price_dir}")
+    if not files:
+        logger.warning(f"No price files found for {pair} in {price_dir}")
         return None
 
-    # Try each pattern
-    for pattern in patterns:
-        matches = list(price_dir.glob(pattern))
-        if matches:
-            # Return first match (most specific pattern should match first)
-            logger.debug(f"Found {len(matches)} files matching pattern: {pattern}")
-            return matches[0]
+    logger.debug(f"Found {len(files)} files for {pair}")
 
-    # Try to list all files and find a match
-    all_feather_files = list(price_dir.glob("*.feather"))
-    logger.debug(f"Total .feather files in directory: {len(all_feather_files)}")
+    # Find the file that contains the target datetime
+    # File start dates are in local timezone
+    for i, (file_path, start_date_local) in enumerate(files):
+        # Convert file start date to UTC for comparison
+        start_date_utc = to_utc(start_date_local)
 
-    for file_path in all_feather_files:
-        filename = file_path.stem.lower()
-        # Check if base symbol is in filename and year_month is at the end
-        if base.lower() in filename and filename.endswith(year_month):
+        # Check if this file contains the target datetime
+        # If it's the last file, use it
+        if i == len(files) - 1:
+            logger.debug(f"Using last file: {file_path}")
+            return file_path
+
+        # Get next file start date
+        next_start_date_utc = to_utc(files[i + 1][1])
+
+        # Check if target is within this file's range
+        if start_date_utc <= dt_utc < next_start_date_utc:
             logger.debug(f"Found matching file: {file_path}")
             return file_path
 
-    logger.warning(
-        f"No price file found for {pair} in {year_month}. "
-        f"Tried patterns: {patterns}"
-    )
+    # If target is before first file, use first file
+    if files:
+        logger.debug(f"Using first file: {files[0][0]}")
+        return files[0][0]
+
     return None
 
 
 def list_available_pairs(price_dir: Path, delimiter: str = "_") -> list:
     """
     List all available trading pairs in the price directory.
+
+    Extracts pair names from files matching pattern: *-trades-*.feather
 
     Args:
         price_dir: Directory containing price files
@@ -170,13 +268,10 @@ def list_available_pairs(price_dir: Path, delimiter: str = "_") -> list:
 
     pairs = set()
 
-    for file_path in price_dir.glob("*.feather"):
-        # Try to extract pair from filename
-        # Expected format: {pair}_{YYYYMM}.feather or variations
+    for file_path in price_dir.glob("*-trades-*.feather"):
         filename = file_path.stem
-
-        # Remove year_month suffix (8 digits at end)
-        match = re.match(r'^(.*?)(?:_\d{8})?$', filename)
+        # Extract pair from {pair}-trades-{date}
+        match = re.match(r'^(.+?)-trades-', filename)
         if match:
             pair_name = match.group(1)
             if pair_name:
@@ -185,45 +280,45 @@ def list_available_pairs(price_dir: Path, delimiter: str = "_") -> list:
     return sorted(list(pairs))
 
 
-def list_available_months(
+def list_available_date_ranges(
     price_dir: Path,
     pair: Optional[str] = None,
     delimiter: str = "_"
 ) -> list:
     """
-    List all available months for a given pair.
+    List all available date ranges for a given pair.
+
+    Returns dates in local timezone (Australia/Sydney).
 
     Args:
         price_dir: Directory containing price files
-        pair: Optional pair filter (if None, lists all months)
+        pair: Optional pair filter (if None, lists all)
         delimiter: Delimiter used in pair names
 
     Returns:
-        List of year-month strings (e.g., ["202401", "202402"])
+        List of start date strings (YYYY-MM-DD) in local timezone
     """
     if not price_dir.exists():
         logger.warning(f"Price directory does not exist: {price_dir}")
         return []
 
-    months = set()
+    dates = []
 
-    for file_path in price_dir.glob("*.feather"):
+    for file_path in price_dir.glob("*-trades-*.feather"):
         filename = file_path.stem
 
-        # Extract year_month from end of filename (8 digits)
-        match = re.search(r'(\d{8})$', filename)
+        # Check pair filter if provided
+        if pair:
+            base = get_base_symbol(pair, delimiter)
+            if pair not in filename and base.lower() not in filename.lower():
+                continue
+
+        # Extract date
+        match = re.search(r'(\d{4})-(\d{2})-(\d{2})', filename)
         if match:
-            year_month = match.group(1)
+            dates.append(match.group(0))
 
-            if pair:
-                # Filter by pair
-                base = get_base_symbol(pair, delimiter)
-                if base.lower() in filename.lower():
-                    months.add(year_month)
-            else:
-                months.add(year_month)
-
-    return sorted(list(months))
+    return sorted(list(set(dates)))
 
 
 def validate_price_directory(price_dir: Path) -> bool:

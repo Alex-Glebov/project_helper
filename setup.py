@@ -44,6 +44,7 @@ setup(
     install_requires=[
         'pandas>=1.3.0',
         'pyarrow>=5.0.0',  # Required for feather support
+        'pytz>=2021.1',     # Timezone support
     ],
     extras_require={
         'dev': [
