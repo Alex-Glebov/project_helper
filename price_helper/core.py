@@ -481,21 +481,35 @@ class ChainResolver:
         self.helper = PriceHelper(price_dir=price_dir, delimiter=delimiter)
         self._cache = {}  # Cache for available pairs
 
-    def _get_available_pairs(self) -> set:
+    def _get_available_pairs(self, dt: Optional[datetime] = None) -> set:
         """
         Scan directory and get all available pair names.
+
+        If dt is provided, only returns pairs that have data files
+        covering the year and month of the requested date.
+
+        Args:
+            dt: Optional datetime to filter pairs by file date range
 
         Returns:
             Set of available pair strings
         """
-        if self._cache.get('pairs'):
-            return self._cache['pairs']
+        cache_key = f'pairs_{dt.strftime("%Y%m") if dt else "all"}'
+        if self._cache.get(cache_key):
+            return self._cache[cache_key]
 
         pairs = set()
 
         if not self.price_dir.exists():
             logger.warning(f"Price directory does not exist: {self.price_dir}")
             return pairs
+
+        # If dt provided, extract year-month for filtering
+        target_year_month = None
+        if dt:
+            dt_local = to_local_timezone(dt)
+            target_year_month = dt_local.strftime("%Y-%m")
+            logger.debug(f"Filtering pairs for year-month: {target_year_month}")
 
         for file_path in self.price_dir.glob("*-trades-*.feather"):
             # Extract pair from {pair}-trades-{date}.feather
@@ -504,6 +518,17 @@ class ChainResolver:
             if match:
                 pair_name = match.group(1)
                 if pair_name:
+                    # If date filtering requested, check file covers target date
+                    if target_year_month:
+                        # Extract date from filename: {pair}-trades-{YYYY-MM-dd}
+                        date_match = re.search(r'-trades-(\d{4})-(\d{2})-\d{2}$', filename)
+                        if date_match:
+                            file_year_month = f"{date_match.group(1)}-{date_match.group(2)}"
+                            # Skip if file doesn't match target month
+                            if file_year_month != target_year_month:
+                                logger.debug(f"Skipping {filename}: {file_year_month} != {target_year_month}")
+                                continue
+
                     pairs.add(pair_name)
                     # Also add the inverse pair
                     base, quote = parse_pair(pair_name, self.delimiter)
@@ -511,8 +536,8 @@ class ChainResolver:
                         inverse = f"{quote}{self.delimiter}{base}"
                         pairs.add(inverse)
 
-        self._cache['pairs'] = pairs
-        logger.debug(f"Found {len(pairs)} available pairs")
+        self._cache[cache_key] = pairs
+        logger.debug(f"Found {len(pairs)} available pairs for {'date ' + target_year_month if target_year_month else 'all dates'}")
         return pairs
 
     def _get_price_direct(
@@ -564,6 +589,7 @@ class ChainResolver:
     def find_chain(
         self,
         target_pair: str,
+        dt: Optional[datetime] = None,
         visited: Optional[set] = None,
         current_path: Optional[list] = None,
         depth: int = 0
@@ -571,8 +597,12 @@ class ChainResolver:
         """
         Recursively find a chain of pairs to calculate target pair.
 
+        If dt is provided, only considers pairs with data files
+        covering the year and month of the requested date.
+
         Args:
             target_pair: The desired pair (e.g., "EUR_JPY")
+            dt: Optional datetime to filter pairs by file date
             visited: Set of visited currencies (for cycle detection)
             current_path: Current chain of pairs being built
             depth: Current recursion depth
@@ -596,8 +626,10 @@ class ChainResolver:
         if not target_base or not target_quote:
             return None
 
+        # Get available pairs, filtered by date if provided
+        available_pairs = self._get_available_pairs(dt)
+
         # Check if we can get this pair directly
-        available_pairs = self._get_available_pairs()
         if target_pair in available_pairs:
             return current_path + [target_pair]
 
@@ -634,6 +666,7 @@ class ChainResolver:
             new_path = current_path + [pair]
             result = self.find_chain(
                 next_pair,
+                dt,
                 visited.copy(),
                 new_path,
                 depth + 1
@@ -679,8 +712,8 @@ class ChainResolver:
             logger.info(f"Found direct price for {pair}: {direct_price[0]}")
             return direct_price[0]
 
-        # Find chain
-        chain = self.find_chain(pair)
+        # Find chain with date filtering
+        chain = self.find_chain(pair, dt)
 
         if not chain:
             raise PriceNotFoundError(
