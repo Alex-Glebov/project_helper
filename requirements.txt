@@ -1,0 +1,14 @@
+# Production dependencies
+# These are automatically installed when you install the package
+# via pip install . or pip install -e .
+
+pandas>=1.3.0
+pyarrow>=5.0.0
+pytz>=2021.1
+
+# Development dependencies (optional)
+# Install with: pip install -r requirements.txt
+
+# Testing
+pytest>=6.0
+pytest-cov>=2.0
