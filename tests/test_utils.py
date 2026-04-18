@@ -1,6 +1,6 @@
 """Tests for utility functions."""
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import pytz
 
@@ -11,6 +11,7 @@ from price_helper.utils import (
     to_local_timezone,
     to_utc,
     parse_filename_date,
+    get_file_end_date,
     find_price_file,
     find_price_files_for_pair,
     list_available_pairs,
@@ -93,17 +94,45 @@ class TestParseFilenameDate:
 
     def test_parse_standard_filename(self):
         """Test parsing standard filename format."""
-        dt = parse_filename_date("BTC_USD-trades-2024-01-15")
-        assert dt is not None
-        assert dt.year == 2024
-        assert dt.month == 1
-        assert dt.day == 15
-        assert dt.tzinfo.zone == 'Australia/Sydney'
+        result = parse_filename_date("BTC_USD-trades-2024-01-15")
+        assert result is not None
+        start_date, months_covered = result
+        assert start_date.year == 2024
+        assert start_date.month == 1
+        assert months_covered == 15  # dd = months covered
+        assert start_date.tzinfo.zone == 'Australia/Sydney'
+
+    def test_parse_single_month_filename(self):
+        """Test parsing single month file."""
+        result = parse_filename_date("BTC_USD-trades-2024-03-01")
+        assert result is not None
+        start_date, months_covered = result
+        assert months_covered == 1
 
     def test_parse_filename_no_date(self):
         """Test parsing filename without date."""
-        dt = parse_filename_date("BTC_USD-trades")
-        assert dt is None
+        result = parse_filename_date("BTC_USD-trades")
+        assert result is None
+
+
+class TestFileEndDate:
+    """Test end date calculation for files."""
+
+    def test_single_month_end_date(self):
+        """Test end date for single month file."""
+        start_date = LOCAL_TIMEZONE.localize(datetime(2024, 1, 1, 0, 0, 0))
+        end_date = get_file_end_date(start_date, 1)
+        assert end_date.year == 2024
+        assert end_date.month == 2
+        assert end_date.day == 1
+
+    def test_three_month_end_date(self):
+        """Test end date for 3 month file."""
+        start_date = LOCAL_TIMEZONE.localize(datetime(2024, 1, 1, 0, 0, 0))
+        end_date = get_file_end_date(start_date, 3)
+        assert end_date.year == 2024
+        assert end_date.month == 4
+        assert end_date.day == 1
 
 
 class TestFindPriceFiles:
@@ -111,24 +140,44 @@ class TestFindPriceFiles:
 
     def test_find_files_for_pair(self, tmp_path):
         """Test finding files for a pair."""
-        # Create test files
-        (tmp_path / "BTC_USD-trades-2024-01-15.feather").touch()
-        (tmp_path / "BTC_USD-trades-2024-02-15.feather").touch()
-        (tmp_path / "ETH_USD-trades-2024-01-15.feather").touch()
+        # Create test files with month coverage
+        (tmp_path / "BTC_USD-trades-2024-01-01.feather").touch()  # Jan
+        (tmp_path / "BTC_USD-trades-2024-02-03.feather").touch()  # Feb-Apr
+        (tmp_path / "ETH_USD-trades-2024-01-01.feather").touch()
 
         files = find_price_files_for_pair("BTC_USD", tmp_path)
         assert len(files) == 2
 
-    def test_find_price_file_specific_date(self, tmp_path):
-        """Test finding file for specific date."""
-        # Create test files
-        (tmp_path / "BTC_USD-trades-2024-01-15.feather").touch()
-        (tmp_path / "BTC_USD-trades-2024-02-15.feather").touch()
+    def test_find_price_file_exact_month(self, tmp_path):
+        """Test finding file for exact month (day=01)."""
+        (tmp_path / "BTC_USD-trades-2024-01-01.feather").touch()  # Jan only
+        (tmp_path / "BTC_USD-trades-2024-02-03.feather").touch()  # Feb-Apr
 
-        target = datetime(2024, 1, 20, 12, 0, 0)
+        target = datetime(2024, 1, 15, 12, 0, 0)
         file_path = find_price_file("BTC_USD", target, tmp_path)
         assert file_path is not None
-        assert "2024-01-15" in str(file_path)
+        # Should prefer exact month match
+        assert "2024-01-01" in str(file_path)
+
+    def test_find_price_file_multi_month(self, tmp_path):
+        """Test finding multi-month file covering target date."""
+        (tmp_path / "BTC_USD-trades-2024-01-01.feather").touch()  # Jan
+        (tmp_path / "BTC_USD-trades-2024-02-03.feather").touch()  # Feb-Apr
+
+        # March 15 should match multi-month file starting Feb
+        target = datetime(2024, 3, 15, 12, 0, 0)
+        file_path = find_price_file("BTC_USD", target, tmp_path)
+        assert file_path is not None
+        assert "2024-02-03" in str(file_path)  # Feb 2024, 3 months
+
+    def test_find_price_file_fallback(self, tmp_path):
+        """Test fallback to closest file."""
+        (tmp_path / "BTC_USD-trades-2024-01-01.feather").touch()
+
+        # June date - no exact match, should use Jan file
+        target = datetime(2024, 6, 15, 12, 0, 0)
+        file_path = find_price_file("BTC_USD", target, tmp_path)
+        assert file_path is not None
 
 
 class TestListAvailable:
@@ -136,8 +185,8 @@ class TestListAvailable:
 
     def test_list_available_pairs(self, tmp_path):
         """Test listing available pairs."""
-        (tmp_path / "BTC_USD-trades-2024-01-15.feather").touch()
-        (tmp_path / "ETH_USD-trades-2024-01-15.feather").touch()
+        (tmp_path / "BTC_USD-trades-2024-01-01.feather").touch()
+        (tmp_path / "ETH_USD-trades-2024-01-01.feather").touch()
 
         pairs = list_available_pairs(tmp_path)
         assert "BTC_USD" in pairs
@@ -145,12 +194,13 @@ class TestListAvailable:
 
     def test_list_available_date_ranges(self, tmp_path):
         """Test listing available date ranges."""
-        (tmp_path / "BTC_USD-trades-2024-01-15.feather").touch()
-        (tmp_path / "BTC_USD-trades-2024-02-15.feather").touch()
+        (tmp_path / "BTC_USD-trades-2024-01-03.feather").touch()  # Jan-Mar
+        (tmp_path / "BTC_USD-trades-2024-04-01.feather").touch()  # Apr
 
-        dates = list_available_date_ranges(tmp_path, pair="BTC_USD")
-        assert "2024-01-15" in dates
-        assert "2024-02-15" in dates
+        ranges = list_available_date_ranges(tmp_path, pair="BTC_USD")
+        assert len(ranges) == 2
+        assert any(r['months'] == 3 for r in ranges)
+        assert any(r['months'] == 1 for r in ranges)
 
 
 class TestValidation:

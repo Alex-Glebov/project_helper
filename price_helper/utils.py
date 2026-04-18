@@ -5,7 +5,7 @@ Handles pair parsing, file path resolution, and other helper functions.
 """
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Tuple
 import logging
@@ -110,39 +110,67 @@ def to_utc(dt: datetime) -> datetime:
     return dt.astimezone(pytz.UTC)
 
 
-def parse_filename_date(filename: str) -> Optional[datetime]:
+def parse_filename_date(filename: str) -> Optional[Tuple[datetime, int]]:
     """
-    Parse date from filename.
+    Parse date and month count from filename.
 
     Filename format: {pair}-trades-{YYYY-MM-dd}.feather
-    where dd is the number of months in the file.
+    where:
+    - YYYY-MM is the year and month
+    - dd is the number of months covered (01 means 1 month, 03 means 3 months)
     The date is in local timezone (Australia/Sydney).
 
     Args:
         filename: Name of the file (without extension)
 
     Returns:
-        Datetime object in local timezone, or None if not found
+        Tuple of (start_date, months_covered) or None if not found
+        start_date is the first day of the starting month in local timezone
     """
-    # Look for date pattern YYYY-MM-DD
+    # Look for date pattern YYYY-MM-DD where DD is months covered
     match = re.search(r'(\d{4})-(\d{2})-(\d{2})', filename)
     if match:
-        year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
-        # Create datetime in local timezone
-        dt = datetime(year, month, day, 0, 0, 0)
-        return LOCAL_TIMEZONE.localize(dt)
+        year = int(match.group(1))
+        month = int(match.group(2))
+        months_covered = int(match.group(3))
+
+        # Create start date (first day of month) in local timezone
+        start_date = datetime(year, month, 1, 0, 0, 0)
+        return LOCAL_TIMEZONE.localize(start_date), months_covered
     return None
+
+
+def get_file_end_date(start_date: datetime, months_covered: int) -> datetime:
+    """
+    Calculate the end date for a file based on start date and months covered.
+
+    Args:
+        start_date: Start date (first day of starting month)
+        months_covered: Number of months covered
+
+    Returns:
+        End date (exclusive - first day after coverage ends)
+    """
+    # Calculate end month
+    total_months = (start_date.year * 12 + start_date.month - 1) + months_covered
+    end_year = total_months // 12
+    end_month = (total_months % 12) + 1
+
+    # Return first day of month after coverage ends
+    end_date = datetime(end_year, end_month, 1, 0, 0, 0)
+    return LOCAL_TIMEZONE.localize(end_date)
 
 
 def find_price_files_for_pair(
     pair: str,
     price_dir: Path,
     delimiter: str = "_"
-) -> List[Tuple[Path, datetime]]:
+) -> List[Tuple[Path, datetime, int]]:
     """
     Find all price files for a given pair.
 
     File naming: {pair}-trades-{YYYY-MM-dd}.feather
+    where dd is the number of months covered.
 
     Args:
         pair: Trading pair string (e.g., "BTC_USD")
@@ -150,7 +178,7 @@ def find_price_files_for_pair(
         delimiter: Delimiter for parsing pair
 
     Returns:
-        List of tuples (file_path, start_date_in_local_tz)
+        List of tuples (file_path, start_date, months_covered)
     """
     base, quote = parse_pair(pair, delimiter)
 
@@ -164,18 +192,20 @@ def find_price_files_for_pair(
     pattern = f"{pair}-trades-*.feather"
 
     for file_path in price_dir.glob(pattern):
-        start_date = parse_filename_date(file_path.stem)
-        if start_date:
-            files.append((file_path, start_date))
+        result = parse_filename_date(file_path.stem)
+        if result:
+            start_date, months_covered = result
+            files.append((file_path, start_date, months_covered))
 
     # Also try without the pair prefix if no files found
     if not files:
         # Try matching by base symbol only
         for file_path in price_dir.glob("*-trades-*.feather"):
             if base.lower() in file_path.stem.lower():
-                start_date = parse_filename_date(file_path.stem)
-                if start_date:
-                    files.append((file_path, start_date))
+                result = parse_filename_date(file_path.stem)
+                if result:
+                    start_date, months_covered = result
+                    files.append((file_path, start_date, months_covered))
 
     # Sort by start date
     files.sort(key=lambda x: x[1])
@@ -193,24 +223,27 @@ def find_price_file(
     Find the price file for a given pair and datetime.
 
     File naming: {pair}-trades-{YYYY-MM-dd}.feather
-    where dd is the number of months in the file.
+    where dd is the number of months covered.
 
-    The datetime is converted to UTC for searching, but the filename
-    date is in local timezone (Australia/Sydney).
+    Strategy:
+    1. First look for file with start month = requested month, day = 01
+    2. If not found, look for multi-month files (day > 01) that cover the date
 
     Args:
         pair: Trading pair string (e.g., "BTC_USD")
-        dt: Target datetime (will be converted to UTC)
+        dt: Target datetime
         price_dir: Directory containing price files
         delimiter: Delimiter for parsing pair
 
     Returns:
         Path to the price file, or None if not found
     """
-    # Convert input datetime to UTC for searching
-    dt_utc = to_utc(dt)
+    # Convert input datetime to local timezone
+    dt_local = to_local_timezone(dt)
+    target_year = dt_local.year
+    target_month = dt_local.month
 
-    logger.debug(f"Searching for {pair} data at UTC: {dt_utc}")
+    logger.debug(f"Searching for {pair} data at local time: {dt_local}")
 
     # Find all files for this pair
     files = find_price_files_for_pair(pair, price_dir, delimiter)
@@ -221,27 +254,37 @@ def find_price_file(
 
     logger.debug(f"Found {len(files)} files for {pair}")
 
-    # Find the file that contains the target datetime
-    # File start dates are in local timezone
-    for i, (file_path, start_date_local) in enumerate(files):
-        # Convert file start date to UTC for comparison
-        start_date_utc = to_utc(start_date_local)
-
-        # Check if this file contains the target datetime
-        # If it's the last file, use it
-        if i == len(files) - 1:
-            logger.debug(f"Using last file: {file_path}")
+    # Step 1: Look for exact month match with day = 01 (single month file)
+    for file_path, start_date, months_covered in files:
+        if (start_date.year == target_year and
+            start_date.month == target_month and
+            months_covered == 1):
+            logger.debug(f"Found exact month file: {file_path}")
             return file_path
 
-        # Get next file start date
-        next_start_date_utc = to_utc(files[i + 1][1])
+    # Step 2: Look for multi-month files that cover the target date
+    for file_path, start_date, months_covered in files:
+        if months_covered > 1:
+            end_date = get_file_end_date(start_date, months_covered)
+            # Check if target date is within [start_date, end_date)
+            if start_date <= dt_local < end_date:
+                logger.debug(f"Found multi-month file covering date: {file_path}")
+                return file_path
 
-        # Check if target is within this file's range
-        if start_date_utc <= dt_utc < next_start_date_utc:
-            logger.debug(f"Found matching file: {file_path}")
+    # Step 3: If no specific match, use file with matching start month (even if multi-month)
+    for file_path, start_date, months_covered in files:
+        if start_date.year == target_year and start_date.month == target_month:
+            logger.debug(f"Using file with matching start month: {file_path}")
             return file_path
 
-    # If target is before first file, use first file
+    # Step 4: Use the file whose start date is closest before target
+    for i in range(len(files) - 1, -1, -1):
+        file_path, start_date, months_covered = files[i]
+        if start_date <= dt_local:
+            logger.debug(f"Using closest file before target: {file_path}")
+            return file_path
+
+    # Step 5: Fall back to first file
     if files:
         logger.debug(f"Using first file: {files[0][0]}")
         return files[0][0]
@@ -296,13 +339,13 @@ def list_available_date_ranges(
         delimiter: Delimiter used in pair names
 
     Returns:
-        List of start date strings (YYYY-MM-DD) in local timezone
+        List of tuples (start_date, months_covered) as strings
     """
     if not price_dir.exists():
         logger.warning(f"Price directory does not exist: {price_dir}")
         return []
 
-    dates = []
+    ranges = []
 
     for file_path in price_dir.glob("*-trades-*.feather"):
         filename = file_path.stem
@@ -314,11 +357,17 @@ def list_available_date_ranges(
                 continue
 
         # Extract date
-        match = re.search(r'(\d{4})-(\d{2})-(\d{2})', filename)
-        if match:
-            dates.append(match.group(0))
+        result = parse_filename_date(filename)
+        if result:
+            start_date, months_covered = result
+            end_date = get_file_end_date(start_date, months_covered)
+            ranges.append({
+                'start': start_date.strftime('%Y-%m-%d'),
+                'months': months_covered,
+                'end': (end_date - timedelta(days=1)).strftime('%Y-%m-%d')
+            })
 
-    return sorted(list(set(dates)))
+    return sorted(ranges, key=lambda x: x['start'])
 
 
 def validate_price_directory(price_dir: Path) -> bool:
