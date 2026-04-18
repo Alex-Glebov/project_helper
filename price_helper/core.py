@@ -51,7 +51,7 @@ class PriceHelper:
 
     def __init__(
         self,
-        price_dir: Union[str, Path] = "~/ollama/claudehome/price",
+        price_dir: Union[str, Path] = "~/claudehome/price",
         delimiter: str = "_",
         timestamp_col: Optional[str] = None,
         price_col: Optional[str] = None
@@ -60,7 +60,7 @@ class PriceHelper:
         Initialize PriceHelper.
 
         Args:
-            price_dir: Directory containing .feather files (default: ~/ollama/claudehome/price)
+            price_dir: Directory containing .feather files (default: ~/claudehome/price)
             delimiter: Delimiter for parsing pair strings (default: "_")
             timestamp_col: Column name for timestamps (auto-detected if None)
             price_col: Column name for prices (auto-detected if None)
@@ -216,6 +216,12 @@ class PriceHelper:
         idx = df['_diff'].idxmin()
         closest_row = df.loc[idx]
 
+        # Handle case where multiple rows have same minimum diff
+        if isinstance(closest_row, pd.DataFrame):
+            closest_row = closest_row.iloc[0]
+        elif isinstance(closest_row, pd.Series) and closest_row.ndim > 1:
+            closest_row = closest_row.iloc[0]
+
         # Auto-detect price column
         price_col = self._detect_column(df, self.DEFAULT_PRICE_COLS, "price")
         if not price_col:
@@ -364,7 +370,7 @@ class ChainResolver:
 
     def __init__(
         self,
-        price_dir: Union[str, Path] = "~/ollama/claudehome/price",
+        price_dir: Union[str, Path] = "~/claudehome/price",
         delimiter: str = "_",
         max_chain_length: int = 4
     ):

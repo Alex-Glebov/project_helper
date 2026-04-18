@@ -15,7 +15,7 @@ from .utils import to_local_timezone
 def get_closest_price(
     dt: datetime,
     pair: str,
-    price_dir: Union[str, Path] = "~/ollama/claudehome/price",
+    price_dir: Union[str, Path] = "~/claudehome/price",
     delimiter: str = "_",
     tolerance_seconds: Optional[int] = None
 ) -> float:
@@ -53,7 +53,7 @@ def get_closest_price(
 def get_closest_price_with_time(
     dt: datetime,
     pair: str,
-    price_dir: Union[str, Path] = "~/ollama/claudehome/price",
+    price_dir: Union[str, Path] = "~/claudehome/price",
     delimiter: str = "_",
     tolerance_seconds: Optional[int] = None
 ) -> Tuple[float, datetime]:
@@ -145,7 +145,7 @@ def get_closest_price_with_time(
 def get_chained_price(
     dt: datetime,
     pair: str,
-    price_dir: Union[str, Path] = "~/ollama/claudehome/price",
+    price_dir: Union[str, Path] = "~/claudehome/price",
     delimiter: str = "_",
     tolerance_seconds: Optional[int] = None,
     max_chain_length: int = 4
