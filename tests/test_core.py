@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from price_helper.core import PriceHelper, get_closest_price, PriceNotFoundError
+from price_helper.utils import to_utc, LOCAL_TIMEZONE
 
 
 class TestPriceHelper:
@@ -63,43 +64,49 @@ class TestFindClosestPriceInDataFrame:
     """Test finding closest price in DataFrame."""
 
     def test_find_closest(self, tmp_path):
-        """Test finding closest price."""
+        """Test finding closest price with timezone-aware timestamps."""
         helper = PriceHelper(price_dir=tmp_path)
 
-        # Create test data
-        target_time = datetime(2024, 1, 15, 12, 30, 0)
+        # Create timezone-aware test data in UTC (as it would be in feather files)
+        target_time_local = datetime(2024, 1, 15, 12, 30, 0)
+        target_time_utc = to_utc(target_time_local)
+
+        # to_utc returns timezone-aware datetimes, so we don't need tz_localize
         df = pd.DataFrame({
             'timestamp': [
-                target_time - timedelta(minutes=5),
-                target_time - timedelta(minutes=1),
-                target_time + timedelta(minutes=2),
-                target_time + timedelta(minutes=10),
+                target_time_utc - timedelta(minutes=5),
+                target_time_utc - timedelta(minutes=1),
+                target_time_utc + timedelta(minutes=2),
+                target_time_utc + timedelta(minutes=10),
             ],
             'price': [99.0, 100.0, 101.0, 102.0]
         })
 
-        price = helper._find_closest_price_in_df(df, target_time)
+        price = helper._find_closest_price_in_df(df, target_time_local)
         assert price == 100.0  # Closest is 1 minute before
 
     def test_find_closest_with_tolerance(self, tmp_path):
         """Test finding closest price with tolerance."""
         helper = PriceHelper(price_dir=tmp_path)
 
-        target_time = datetime(2024, 1, 15, 12, 30, 0)
+        target_time_local = datetime(2024, 1, 15, 12, 30, 0)
+        target_time_utc = to_utc(target_time_local)
+
+        # to_utc returns timezone-aware datetimes
         df = pd.DataFrame({
             'timestamp': [
-                target_time - timedelta(minutes=10),
-                target_time + timedelta(minutes=10),
+                target_time_utc - timedelta(minutes=10),
+                target_time_utc + timedelta(minutes=10),
             ],
             'price': [99.0, 101.0]
         })
 
         # Should raise error if tolerance is too small
         with pytest.raises(PriceNotFoundError):
-            helper._find_closest_price_in_df(df, target_time, tolerance_seconds=60)
+            helper._find_closest_price_in_df(df, target_time_local, tolerance_seconds=60)
 
         # Should succeed with larger tolerance
-        price = helper._find_closest_price_in_df(df, target_time, tolerance_seconds=900)
+        price = helper._find_closest_price_in_df(df, target_time_local, tolerance_seconds=900)
         assert price in [99.0, 101.0]
 
 
