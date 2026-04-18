@@ -112,31 +112,44 @@ def to_utc(dt: datetime) -> datetime:
 
 def parse_filename_date(filename: str) -> Optional[Tuple[datetime, int]]:
     """
-    Parse date and month count from filename.
+    Parse date from filename.
 
-    Filename format: {pair}-trades-{YYYY-MM-dd}.feather
+    Filename format: {pair}-trades-{YYYYMMDD}.feather
     where:
-    - YYYY-MM is the year and month
-    - dd is the number of months covered (01 means 1 month, 03 means 3 months)
+    - YYYY = year
+    - MM = month
+    - DD = day (typically 01 for monthly files)
     The date is in local timezone (Australia/Sydney).
+
+    Each file covers one month by default.
 
     Args:
         filename: Name of the file (without extension)
 
     Returns:
-        Tuple of (start_date, months_covered) or None if not found
-        start_date is the first day of the starting month in local timezone
+        Tuple of (start_date, months_covered=1) or None if not found
+        start_date is the first day of the month in local timezone
     """
-    # Look for date pattern YYYY-MM-DD where DD is months covered
+    # Look for date pattern YYYYMMDD (8 consecutive digits)
+    # Example: 20201001 = 2020-10-01
+    match = re.search(r'(\d{4})(\d{2})(\d{2})', filename)
+    if match:
+        year = int(match.group(1))
+        month = int(match.group(2))
+        # day = int(match.group(3))  # Usually 01
+
+        # Create start date (first day of month) in local timezone
+        start_date = datetime(year, month, 1, 0, 0, 0)
+        return LOCAL_TIMEZONE.localize(start_date), 1  # Each file is 1 month
+
+    # Also try dashed format for compatibility: YYYY-MM-DD
     match = re.search(r'(\d{4})-(\d{2})-(\d{2})', filename)
     if match:
         year = int(match.group(1))
         month = int(match.group(2))
-        months_covered = int(match.group(3))
-
-        # Create start date (first day of month) in local timezone
         start_date = datetime(year, month, 1, 0, 0, 0)
-        return LOCAL_TIMEZONE.localize(start_date), months_covered
+        return LOCAL_TIMEZONE.localize(start_date), 1
+
     return None
 
 
@@ -144,9 +157,11 @@ def get_file_end_date(start_date: datetime, months_covered: int) -> datetime:
     """
     Calculate the end date for a file based on start date and months covered.
 
+    For monthly files, calculates the last day of the covered month(s).
+
     Args:
         start_date: Start date (first day of starting month)
-        months_covered: Number of months covered
+        months_covered: Number of months covered (usually 1)
 
     Returns:
         End date (exclusive - first day after coverage ends)
