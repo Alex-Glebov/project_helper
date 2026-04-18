@@ -12,12 +12,14 @@ Timezone handling:
 """
 
 from .core import (
-    get_closest_price,
-    get_closest_price_with_time,
-    get_chained_price,
     PriceHelper,
     ChainResolver,
     PriceNotFoundError,
+)
+from .api import (
+    get_closest_price,
+    get_closest_price_with_time,
+    get_chained_price,
 )
 from .utils import (
     parse_pair,
