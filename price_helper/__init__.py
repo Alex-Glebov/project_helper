@@ -31,7 +31,7 @@ from .utils import (
 )
 
 __version__ = "0.2.0"
-__author__ = "Alex Glebov + Claude code"
+__author__ = "Alex Glebov + Claude Code"
 __email__ = "python@iitsp.com.au"
 
 __all__ = [

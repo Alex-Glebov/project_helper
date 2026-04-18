@@ -272,5 +272,5 @@ MIT License
 
 ## Author
 
-Alex Glebov + Claude code
+Alex Glebov + Claude Code
 Email: python@iitsp.com.au

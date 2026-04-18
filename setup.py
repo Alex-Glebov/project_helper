@@ -22,7 +22,7 @@ else:
 setup(
     name='price-helper',
     version='0.1.0',
-    author='Alex Glebov + Claude code',
+    author='Alex Glebov + Claude Code',
     author_email='python@iitsp.com.au',
     description='Python package for retrieving price data from Feather files',
     long_description=long_description,
