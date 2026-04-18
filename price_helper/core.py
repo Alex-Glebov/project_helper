@@ -94,6 +94,18 @@ class PriceHelper:
     def price_col(self, value: str):
         self._price_col = value
 
+    def __enter__(self):
+        """Context manager entry - return self for use with 'with' statement."""
+        logger.debug("PriceHelper context entered")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - cleanup if needed."""
+        logger.debug("PriceHelper context exited")
+        # Cleanup could go here (close file handles, etc.)
+        # Return False to propagate exceptions, True to suppress
+        return False
+
     def get_closest_price(
         self,
         dt: datetime,
