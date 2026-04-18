@@ -228,7 +228,14 @@ class PriceHelper:
         # Get timestamp in local timezone for logging
         closest_ts_utc = closest_row[timestamp_col]
         if hasattr(closest_ts_utc, 'to_pydatetime'):
-            closest_ts_utc = closest_ts_utc.to_pydatetime()
+            # NOTE: Pandas timestamps have nanosecond precision, but Python datetime
+            # only supports microsecond precision. The conversion may lose sub-microsecond
+            # precision. We suppress the UserWarning as this is a known limitation.
+            # See: pandas.Timestamp.to_pydatetime() documentation
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                closest_ts_utc = closest_ts_utc.to_pydatetime()
         closest_ts_local = to_local_timezone(closest_ts_utc)
 
         logger.info(
