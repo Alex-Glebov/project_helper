@@ -7,11 +7,19 @@ This package can be installed locally for development:
 Or from the GitHub repository:
     pip install git+https://github.com/Alex-Glebov/project_helper.git
 """
-from setuptools import setup, find_packages
 import os
+import re
+
+from setuptools import setup, find_packages
+
+# Read version from package __init__.py without importing
+here = os.path.abspath(os.path.dirname(__file__))
+version_file = os.path.join(here, 'price_helper', '__init__.py')
+with open(version_file, 'r', encoding='utf-8') as f:
+    version_match = re.search(r'^__version__ = [\'"]([^\'"]*)[\'"]', f.read(), re.M)
+    version = version_match.group(1) if version_match else '0.0.0'
 
 # Read README
-here = os.path.abspath(os.path.dirname(__file__))
 readme_path = os.path.join(here, 'README.md')
 if os.path.exists(readme_path):
     with open(readme_path, 'r', encoding='utf-8') as f:
@@ -21,14 +29,17 @@ else:
 
 setup(
     name='price-helper',
-    version='0.1.0',
+    version=version,
     author='Alex Glebov + Claude Code',
     author_email='python@iitsp.com.au',
     description='Python package for retrieving price data from Feather files',
     long_description=long_description,
     long_description_content_type='text/markdown',
     url='https://github.com/Alex-Glebov/project_helper',
-    packages=find_packages(),
+    packages=find_packages(exclude=['tests', 'tests.*', 'wiki']),
+    package_data={
+        'price_helper': ['*.py'],
+    },
     license='MIT',
     classifiers=[
         'Development Status :: 3 - Alpha',
